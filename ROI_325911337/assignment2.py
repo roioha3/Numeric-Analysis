@@ -46,62 +46,114 @@ class Assignment2:
 
         """
         # replace this line with your solution
+        if a == b:
+            x = float(a)
+            return [x] if abs(f1(x) - f2(x)) <= maxerr else []
+
+        if a > b:
+            a, b = b, a
+
         def g(x):
             return f1(x) - f2(x)
-        
-        def refine_root(left, right):
-            g_left = g(left)
-            g_right = g(right)
 
-            # if one of the ends is already good enough, return it
-            if abs(g_left) <= maxerr:
+        base = 2048
+        span = b - a
+        N = int(np.clip(base * np.sqrt(max(1.0, span)), 512, 20000))
+
+        xs = np.linspace(a, b, N, dtype=float)
+
+        try:
+            y = g(xs)
+            y = np.asarray(y, dtype=float)
+            if y.shape != xs.shape:
+                raise ValueError
+        except Exception:
+            y = np.fromiter((g(x) for x in xs), dtype=float, count=N)
+
+        eps = float(maxerr)
+        mask_close = np.abs(y) <= eps
+        idx_close = np.flatnonzero(mask_close)
+
+        idx_sc = np.flatnonzero((y[:-1] * y[1:]) <= 0.0)
+
+        candidates = np.unique(np.concatenate((idx_sc, idx_close)))
+        if candidates.size == 0:
+            return []
+
+        def refine(left, right, gl, gr):
+            if abs(gl) <= eps:
                 return left
-            if abs(g_right) <= maxerr:
+            if abs(gr) <= eps:
                 return right
-
-            # if no sign change and neither endpoint is close to zero, give up on this interval
-            if g_left * g_right > 0:
+            if gl == 0.0:
+                return left
+            if gr == 0.0:
+                return right
+            if gl * gr > 0.0:
                 return None
 
-            for _ in range(50):  # limit iterations
-                mid = 0.5 * (left + right)
-                g_mid = g(mid)
+            xl, xr = left, right
+            fl, fr = gl, gr
+            x = 0.5 * (xl + xr)
+            fx = g(x)
 
-                if abs(g_mid) <= maxerr:
-                    return mid
+            for _ in range(30):
+                if abs(fx) <= eps:
+                    return x
 
-                # keep the half where the sign changes
-                if g_left * g_mid <= 0:
-                    right = mid
-                    g_right = g_mid
+                denom = (fr - fl)
+                if denom != 0.0:
+                    xs_ = xr - fr * (xr - xl) / denom
                 else:
-                    left = mid
-                    g_left = g_mid
+                    xs_ = 0.5 * (xl + xr)
 
-            # after max iterations, just return the midpoint
-            return 0.5 * (left + right)
+                if not (xl < xs_ < xr):
+                    xs_ = 0.5 * (xl + xr)
 
-        N = 1000 # number of sample points
-        
-        xs = np.linspace(a, b, N)
-        ys = [g(x) for x in xs]
-        
-        intervals = []
-        for i in range(N - 1):
-            x0, x1 = xs[i], xs[i + 1]
-            y0, y1 = ys[i], ys[i + 1]
-            if y0 * y1 <= 0:
-                intervals.append((x0, x1))
-        
-        X = []
-        for left, right in intervals:
-            root = refine_root(left, right)
-            if root is not None:
-                if not any(abs(root - r) < 1e-4 for r in X): # To avoid duplicates
-                    X.append(root)
+                fs = g(xs_)
+                if abs(fs) <= eps:
+                    return xs_
 
-        return X
+                if fl * fs <= 0.0:
+                    xr, fr = xs_, fs
+                else:
+                    xl, fl = xs_, fs
 
+                x = 0.5 * (xl + xr)
+                fx = g(x)
+
+            return x
+
+        roots = []
+
+        for i in idx_close:
+            roots.append(float(xs[i]))
+
+        for i in idx_sc:
+            left = float(xs[i])
+            right = float(xs[i + 1])
+            gl = float(y[i])
+            gr = float(y[i + 1])
+            r = refine(left, right, gl, gr)
+            if r is not None:
+                roots.append(float(r))
+
+        if not roots:
+            return []
+
+        roots.sort()
+        out = [roots[0]]
+        tol = max(1e-6, 10.0 * eps, (b - a) / max(1.0, N) * 0.25)
+        for x in roots[1:]:
+            if abs(x - out[-1]) > tol:
+                out.append(x)
+
+        final = []
+        for x in out:
+            if abs(f1(x) - f2(x)) <= eps:
+                final.append(x)
+
+        return final
 
 ##########################################################################
 
@@ -117,11 +169,11 @@ class TestAssignment2(unittest.TestCase):
 
         ass2 = Assignment2()
 
-        f1 = lambda x: x - 1 
-        f2 = lambda x: 0
+        f1 = np.poly1d([-1, 0, 1])
+        f2 = np.poly1d([1, 0, -1])
 
         X = ass2.intersections(f1, f2, -1, 1, maxerr=0.001)
-        print(X)
+
         for x in X:
             self.assertGreaterEqual(0.001, abs(f1(x) - f2(x)))
 
@@ -132,7 +184,7 @@ class TestAssignment2(unittest.TestCase):
         f1, f2 = randomIntersectingPolynomials(10)
 
         X = ass2.intersections(f1, f2, -1, 1, maxerr=0.001)
-        
+
         for x in X:
             self.assertGreaterEqual(0.001, abs(f1(x) - f2(x)))
 
