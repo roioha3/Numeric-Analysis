@@ -17,219 +17,90 @@ This assignment is more complicated than Assignment1 and Assignment2 because:
 """
 
 import numpy as np
-import time
-import random
 
 class Assignment3:
     def __init__(self):
         """
-        Here goes any one time calculation that need to be made before 
-        solving the assignment for specific functions. 
+        Initialization for pre-calculations.
         """
         pass
 
     def integrate(self, f: callable, a: float, b: float, n: int) -> np.float32:
         """
-        Integrate the function f in the closed range [a,b] using at most n 
-        points. Your main objective is minimizing the integration error. 
-        Your secondary objective is minimizing the running time. The assignment
-        will be tested on variety of different functions. 
-        
-        Integration error will be measured compared to the actual value of the 
-        definite integral. 
-        
-        Note: It is forbidden to call f more than n times. 
-        
-        Parameters
-        ----------
-        f : callable. it is the given function
-        a : float
-            beginning of the integration range.
-        b : float
-            end of the integration range.
-        n : int
-            maximal number of points to use.
-
-        Returns
-        -------
-        np.float32
-            The definite integral of f between a and b
+        Calculates the definite integral using Gauss-Legendre Quadrature.
         """
+        # Convert bounds to float64 for intermediate calculation stability
+        lower, upper = np.float64(a), np.float64(b)
+        
+        # Obtain Legendre-Gauss nodes and weights
+        nodes, weights = np.polynomial.legendre.leggauss(n)
 
-        a = np.float32(a)
-        b = np.float32(b)
-
-        if n <= 0 or a == b:
-            return np.float32(0.0)
-
-        # keep direction consistent
-        sign = np.float32(1.0)
-        if b < a:
-            a, b = b, a
-            sign = np.float32(-1.0)
-
-        # Cache to guarantee we never call f more than n times
-        cache = {}
-        calls = 0
-
-        def _key(x32: np.float32) -> int:
-            return int(np.float32(x32).view(np.int32))
-
-        def eval_f(x32: np.float32) -> np.float32:
-            nonlocal calls
-            x32 = np.float32(x32)
-            k = _key(x32)
-            if k in cache:
-                return cache[k]
-            if calls >= n:
-                # budget exhausted, should not happen if refinement checks are correct
-                return np.float32(0.0)
-            y32 = np.float32(f(float(x32)))
-            cache[k] = y32
-            calls += 1
-            return y32
-
-        def simpson_uniform(xs: np.ndarray, ys: np.ndarray) -> np.float32:
-            """
-            Composite Simpson for uniform grid xs (float32) with an even number of subintervals.
-            """
-            N = xs.size - 1  # number of subintervals
-            h = np.float32((xs[-1] - xs[0]) / np.float32(N))
-            s = np.float32(ys[0] + ys[-1])
-            if ys.size > 2:
-                s += np.float32(4.0) * np.sum(ys[1:-1:2], dtype=np.float32)
-                s += np.float32(2.0) * np.sum(ys[2:-1:2], dtype=np.float32)
-            return np.float32(h * s / np.float32(3.0))
-
-        # Start with an even number of subintervals (Simpson requirement)
-        N = 4
-        xs = np.linspace(a, b, N + 1, dtype=np.float32)
-        ys = np.array([eval_f(x) for x in xs], dtype=np.float32)
-
-        I_prev = simpson_uniform(xs, ys)
-
-        # Adaptive refinement: each step doubles intervals by inserting midpoints.
-        # Adds exactly N new evaluations (the midpoints), so we can check budget safely.
-        for _ in range(25):
-            if calls + N > n:
-                break
-
-            xs_old = xs
-            ys_old = ys
-
-            mids = np.float32((xs_old[:-1] + xs_old[1:]) / np.float32(2.0))
-            ys_mid = np.array([eval_f(x) for x in mids], dtype=np.float32)
-
-            # Build refined arrays of length (2N + 1) without broadcasting issues
-            xs = np.empty((2 * N + 1,), dtype=np.float32)
-            ys = np.empty((2 * N + 1,), dtype=np.float32)
-
-            xs[0::2] = xs_old
-            ys[0::2] = ys_old
-            xs[1::2] = mids
-            ys[1::2] = ys_mid
-
-            N *= 2
-            I_new = simpson_uniform(xs, ys)
-
-            # Stop when the Simpson refinement is stable enough (float32 scale-aware)
-            diff = np.float32(abs(I_new - I_prev))
-            scale = np.float32(max(np.float32(1.0), abs(I_new)))
-            if diff <= np.float32(1e-5) * scale:
-                I_prev = I_new
-                break
-
-            I_prev = I_new
-
-        return np.float32(sign * I_prev)
+        # Rescale nodes from [-1, 1] to [a, b]
+        # formula: x = (b-a)/2 * node + (b+a)/2
+        scaling_factor = 0.5 * (upper - lower)
+        offset = 0.5 * (upper + lower)
+        mapped_nodes = scaling_factor * nodes + offset
+        
+        # Evaluate function across all mapped nodes
+        # List comprehension ensures the callable is handled correctly
+        y_values = np.array([f(x) for x in mapped_nodes], dtype=np.float64)
+        
+        # The integral is the dot product of weights and values, scaled by (b-a)/2
+        result = np.dot(weights, y_values) * scaling_factor
+        
+        return np.float32(result)
 
     def areabetween(self, f1: callable, f2: callable) -> np.float32:
         """
-        Finds the area enclosed between two functions. This method finds 
-        all intersection points between the two functions to work correctly. 
-        
-        Example: https://www.wolframalpha.com/input/?i=area+between+the+curves+y%3D1-2x%5E2%2Bx%5E3+and+y%3Dx
-
-        Note, there is no such thing as negative area. 
-        
-        In order to find the enclosed area the given functions must intersect 
-        in at least two points. If the functions do not intersect or intersect 
-        in less than two points this function returns NaN.  
-        This function may not work correctly if there is infinite number of 
-        intersection points. 
-        
-        Parameters
-        ----------
-        f1,f2 : callable. These are the given functions
-
-        Returns
-        -------
-        np.float32
-            The area between function and the X axis
+        Computes the total absolute area between two functions by finding intersections.
         """
+        # Define the difference function
+        diff_func = lambda x: f1(x) - f2(x)
+        
+        # 1. Search for root intervals within the specified range [1, 100]
+        search_range = np.linspace(1.0, 100.0, num=1000, dtype=np.float32)
+        vals = np.array([diff_func(x) for x in search_range], dtype=np.float32)
+        
+        # Detect sign changes
+        # np.sign(vals) gives -1, 0, or 1. np.diff finds where these change.
+        sign_changes = np.where(np.diff(np.sign(vals)) != 0)[0]
+        
+        intersections = []
+        
+        # 2. Refine roots using Bisection
+        for idx in sign_changes:
+            low, high = search_range[idx], search_range[idx + 1]
+            
+            # Standard bisection refinement
+            for _ in range(25):
+                mid = np.float32(0.5) * (low + high)
+                if diff_func(low) * diff_func(mid) <= 0:
+                    high = mid
+                else:
+                    low = mid
+            
+            root = np.float32(0.5) * (low + high)
+            
+            # Prevent adding duplicates that are too close together
+            if not intersections or abs(root - intersections[-1]) > 1e-3:
+                intersections.append(root)
 
-        # Intersections outside [1, 100] may be ignored (per project instructions).
-        L = np.float32(1.0)
-        R = np.float32(100.0)
-
-        def g(x32: np.float32) -> np.float32:
-            return np.float32(f1(float(x32)) - f2(float(x32)))
-
-        # Dense scan to find sign changes
-        xs = np.linspace(L, R, 4096, dtype=np.float32)
-        gs = np.array([g(x) for x in xs], dtype=np.float32)
-
-        roots = []
-
-        # Bisection on each sign change interval
-        for i in range(xs.size - 1):
-            a = xs[i]
-            b = xs[i + 1]
-            fa = gs[i]
-            fb = gs[i + 1]
-
-            if fa == 0.0:
-                roots.append(a)
-                continue
-
-            if fa * fb < 0.0:
-                left = a
-                right = b
-                fL = fa
-                for _ in range(60):
-                    mid = np.float32((left + right) / np.float32(2.0))
-                    fM = g(mid)
-                    if abs(fM) <= np.float32(1e-5):
-                        left = right = mid
-                        break
-                    if fL * fM <= 0.0:
-                        right = mid
-                    else:
-                        left = mid
-                        fL = fM
-                roots.append(np.float32((left + right) / np.float32(2.0)))
-
-        roots = np.unique(np.array(roots, dtype=np.float32))
-        roots.sort()
-
-        if roots.size < 2:
+        # Validation: Must have at least two points to enclose an area
+        if len(intersections) < 2:
             return np.float32(np.nan)
+            
+        total_accumulated_area = np.float32(0.0)
+        
+        # 3. Sum the absolute area of each enclosed segment
+        for j in range(len(intersections) - 1):
+            left_bound = intersections[j]
+            right_bound = intersections[j + 1]
+            
+            # Integrating the difference function per segment
+            segment_val = self.integrate(diff_func, left_bound, right_bound, 64)
+            total_accumulated_area += np.abs(segment_val)
 
-        def absdiff(x: float) -> np.float32:
-            x32 = np.float32(x)
-            return np.float32(abs(np.float32(f1(float(x32)) - f2(float(x32)))))
-
-        area = np.float32(0.0)
-        for i in range(roots.size - 1):
-            a = roots[i]
-            b = roots[i + 1]
-            if b > a:
-                # 200 points per segment is usually plenty; you can raise this if needed.
-                area = np.float32(area + self.integrate(absdiff, float(a), float(b), 200))
-
-        return np.float32(area)
-
-
+        return np.float32(total_accumulated_area)
 ##########################################################################
 
 
