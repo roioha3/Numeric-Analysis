@@ -13,321 +13,333 @@ your iterations may take more than 1-2 seconds break out of any optimization
 loops you have ahead of time.
 
 Note: You are NOT allowed to use any numeric optimization libraries and tools 
-for solving this assignment. 
-
+for solving this assignment.
 """
+
 import numpy as np
 import time
-import random
+
+
+def _poly_eval_inc(coeffs_inc: np.ndarray, t):
+    """
+    Evaluate polynomial sum_{k=0}^d coeffs_inc[k] * t^k using Horner.
+    Works for scalar or numpy array t.
+    """
+    res = 0.0
+    for c in coeffs_inc[::-1]:
+        res = res * t + c
+    return res
+
+
+def _cholesky_solve_spd(A: np.ndarray, b: np.ndarray):
+    """
+    Solve Ax=b for SPD A using a small custom Cholesky.
+    Returns None if A is not SPD numerically.
+    """
+    n = A.shape[0]
+    L = np.zeros((n, n), dtype=np.float64)
+
+    # A = L L^T
+    for i in range(n):
+        for j in range(i + 1):
+            s = float(np.dot(L[i, :j], L[j, :j]))
+            if i == j:
+                v = float(A[i, i]) - s
+                if v <= 0.0 or not np.isfinite(v):
+                    return None
+                L[i, j] = np.sqrt(v)
+            else:
+                diag = float(L[j, j])
+                if diag <= 0.0 or not np.isfinite(diag):
+                    return None
+                L[i, j] = (float(A[i, j]) - s) / diag
+
+    # Forward: L y = b
+    y = np.zeros(n, dtype=np.float64)
+    for i in range(n):
+        diag = float(L[i, i])
+        if diag == 0.0 or not np.isfinite(diag):
+            return None
+        y[i] = (float(b[i]) - float(np.dot(L[i, :i], y[:i]))) / diag
+
+    # Backward: L^T x = y
+    x = np.zeros(n, dtype=np.float64)
+    for i in range(n - 1, -1, -1):
+        diag = float(L[i, i])
+        if diag == 0.0 or not np.isfinite(diag):
+            return None
+        x[i] = (float(y[i]) - float(np.dot(L[i + 1:, i], x[i + 1:]))) / diag
+
+    return x
 
 
 class Assignment4:
     def __init__(self):
-        """
-        Here goes any one time calculation that need to be made before 
-        solving the assignment for specific functions. 
-        """
         pass
 
-    @staticmethod
-    def _solve_gauss_pp(A: np.ndarray, b: np.ndarray) -> np.ndarray:
-        A = A.astype(np.float64, copy=True)
-        b = b.astype(np.float64, copy=True)
-        n = A.shape[0]
-
-        for k in range(n):
-            piv = k + int(np.argmax(np.abs(A[k:, k])))
-            if A[piv, k] == 0:
-                return np.zeros(n, dtype=np.float64)
-            if piv != k:
-                A[[k, piv]] = A[[piv, k]]
-                b[[k, piv]] = b[[piv, k]]
-
-            akk = A[k, k]
-            for i in range(k + 1, n):
-                factor = A[i, k] / akk
-                if factor != 0.0:
-                    A[i, k:] -= factor * A[k, k:]
-                    b[i] -= factor * b[k]
-
-        x = np.zeros(n, dtype=np.float64)
-        for i in range(n - 1, -1, -1):
-            s = b[i] - np.dot(A[i, i + 1:], x[i + 1:])
-            if A[i, i] == 0:
-                return np.zeros(n, dtype=np.float64)
-            x[i] = s / A[i, i]
-        return x
-
-    @staticmethod
-    def _cheb_vec(t: float, m: int) -> np.ndarray:
-        v = np.empty(m, dtype=np.float64)
-        v[0] = 1.0
-        if m == 1:
-            return v
-        v[1] = t
-        for k in range(2, m):
-            v[k] = 2.0 * t * v[k - 1] - v[k - 2]
-        return v
-
-    @staticmethod
-    def _clenshaw_cheb(c: np.ndarray, t: float) -> float:
-        n = c.shape[0]
-        if n == 0:
-            return 0.0
-        b1 = 0.0
-        b2 = 0.0
-        for k in range(n - 1, 0, -1):
-            b0 = 2.0 * t * b1 - b2 + float(c[k])
-            b2 = b1
-            b1 = b0
-        return float(c[0]) + t * b1 - b2
-
-    @staticmethod
-    def _ridge_fit(X: np.ndarray, y: np.ndarray, lam_scale: float) -> np.ndarray:
-        m = X.shape[1]
-        Z = X.T @ X
-        r = X.T @ y
-        tr = float(np.trace(Z))
-        lam = (lam_scale * tr / max(1, m)) if tr > 0 else lam_scale
-        for i in range(m):
-            Z[i, i] += lam
-        return Assignment4._solve_gauss_pp(Z, r)
-
-    @staticmethod
-    def _safe_exp(u: float) -> float:
-        if u > 700.0:
-            return float(np.exp(700.0))
-        if u < -700.0:
-            return float(np.exp(-700.0))
-        return float(np.exp(u))
-
-    @staticmethod
-    def _safe_exp_exp(u: float) -> float:
-        # exp(exp(u)) — clamp u so exp(u) <= 700 (=> u <= ln(700) ~ 6.55)
-        ln700 = 6.551080335
-        if u > ln700:
-            return float(np.exp(700.0))
-        if u < -50.0:
-            return float(np.exp(np.exp(-50.0)))
-        return float(np.exp(np.exp(u)))
-
     def fit(self, f: callable, a: float, b: float, d: int, maxtime: float) -> callable:
-        """
-        Build a function that accurately fits the noisy data points sampled from
-        some closed shape. 
-        
-        Parameters
-        ----------
-        f : callable. 
-            A function which returns an approximate (noisy) Y value given X. 
-        a: float
-            Start of the fitting range
-        b: float
-            End of the fitting range
-        d: int 
-            The expected degree of a polynomial matching f
-        maxtime : float
-            This function returns after at most maxtime seconds. 
-
-        Returns
-        -------
-        a function:float->float that fits f between a and b
-        """
-
         start = time.time()
-        deadline = start + float(maxtime)
-        hard_deadline = deadline + 4.9
 
+        maxtime = float(maxtime) if maxtime is not None else 1.0
+        if maxtime <= 0.0:
+            return lambda x: 0.0
+
+        # normalize order
+        if b < a:
+            a, b = b, a
+
+        # degenerate interval
         if a == b:
-            y0 = float(f(a))
-            return lambda x, y0=y0: y0
+            try:
+                y0 = float(np.asarray(f(a)).reshape(-1)[0])
+            except Exception:
+                y0 = 0.0
 
-        # estimate one call cost (important for DELAYED)
-        t0 = time.time()
-        y_probe = float(f(0.5 * (a + b)))
-        t1 = time.time()
-        est_call = max(1e-4, t1 - t0)
-
-        def can_start_call():
-            now = time.time()
-            return (now < deadline) and (hard_deadline - now >= est_call + 0.01)
-
-        # choose stable local degree
-        local_deg = min(10, int(d))
-        m = local_deg + 1
-
-        # number of segments: more segments when d is big (like your interpolation),
-        # but bounded so we don't explode sampling
-        segs = max(1, min(20, (int(d) + local_deg) // local_deg))
-        edges = np.linspace(a, b, segs + 1, dtype=np.float64)
-
-        # sample budget: enough for averaging noise per segment, but bounded
-        # (calls dominate time; algebra is tiny)
-        per_seg = max(20, 6 * m)
-        max_total = min(2000, max(300, segs * per_seg))
-
-        # collect samples per segment
-        seg_x = [[] for _ in range(segs)]
-        seg_y = [[] for _ in range(segs)]
-
-        # seed each segment with a few grid points (good coverage)
-        for s in range(segs):
-            L = float(edges[s])
-            R = float(edges[s + 1])
-            xs = np.linspace(L, R, min(per_seg, 12), dtype=np.float64)
-            for x in xs:
-                if not can_start_call():
-                    break
-                t_call0 = time.time()
-                y = float(f(float(x)))
-                t_call1 = time.time()
-                est_call = 0.85 * est_call + 0.15 * max(1e-4, t_call1 - t_call0)
-                seg_x[s].append(float(x))
-                seg_y[s].append(float(y))
-            if not can_start_call():
-                break
-
-        # random fill until budget / time runs out
-        total = sum(len(seg_x[s]) for s in range(segs))
-        while total < max_total and can_start_call():
-            x = random.uniform(a, b)
-            s = int((x - a) * segs / (b - a))
-            if s < 0:
-                s = 0
-            elif s >= segs:
-                s = segs - 1
-
-            t_call0 = time.time()
-            y = float(f(x))
-            t_call1 = time.time()
-            est_call = 0.85 * est_call + 0.15 * max(1e-4, t_call1 - t_call0)
-
-            seg_x[s].append(float(x))
-            seg_y[s].append(float(y))
-            total += 1
-
-        # fit a small model per segment
-        models = []
-        eps = 1e-300
-
-        for s in range(segs):
-            xs = np.asarray(seg_x[s], dtype=np.float64)
-            ys = np.asarray(seg_y[s], dtype=np.float64)
-
-            L = float(edges[s])
-            R = float(edges[s + 1])
-            mid = 0.5 * (L + R)
-            half = 0.5 * (R - L) if R != L else 1.0
-
-            if xs.size < m:
-                # fallback constant
-                yconst = float(np.mean(ys)) if ys.size else float(y_probe)
-                models.append(("const", yconst, L, R, mid, half, None))
-                continue
-
-            # normalize x -> t in [-1,1]
-            ts = (xs - mid) / half
-            ts = np.clip(ts, -1.0, 1.0)
-
-            # build design matrix
-            N = ts.shape[0]
-            X = np.empty((N, m), dtype=np.float64)
-            for i in range(N):
-                X[i, :] = self._cheb_vec(float(ts[i]), m)
-
-            # simple train/val split
-            ntr = int(0.75 * N) if N >= 30 else N
-            Xtr, ytr = X[:ntr], ys[:ntr]
-            Xva, yva = X[ntr:], ys[ntr:]
-
-            def mse(y_true, y_pred):
-                if y_true.size == 0:
-                    return 1e300
-                return float(np.mean((y_true - y_pred) ** 2))
-
-            # candidate A (y)
-            c_y = self._ridge_fit(Xtr, ytr, lam_scale=1e-6)
-            pred = (Xva @ c_y) if yva.size else (Xtr @ c_y)
-            err_y = mse(yva if yva.size else ytr, pred)
-
-            best_kind = "y"
-            best_c = c_y
-            best_err = err_y
-
-            # candidate B (log y) if mostly positive
-            if float(np.mean(ytr > 0.0)) > 0.9:
-                ztr = np.log(np.maximum(ytr, eps))
-                c_log = self._ridge_fit(Xtr, ztr, lam_scale=1e-6)
-                if yva.size and float(np.mean(yva > 0.0)) > 0.9:
-                    zpred = Xva @ c_log
-                    ypred = np.exp(np.clip(zpred, -700.0, 700.0))
-                    err = mse(yva, ypred)
-                else:
-                    zpred = Xtr @ c_log
-                    ypred = np.exp(np.clip(zpred, -700.0, 700.0))
-                    err = mse(ytr, ypred)
-                if err < best_err:
-                    best_kind = "log"
-                    best_c = c_log
-                    best_err = err
-
-            # candidate C (log log y) if mostly > 1
-            if float(np.mean(ytr > 1.0)) > 0.9:
-                wtr = np.log(np.maximum(np.log(np.maximum(ytr, 1.0 + eps)), eps))
-                c_ll = self._ridge_fit(Xtr, wtr, lam_scale=1e-6)
-                if yva.size and float(np.mean(yva > 1.0)) > 0.9:
-                    wpred = Xva @ c_ll
-                    ypred = np.exp(np.clip(np.exp(np.clip(wpred, -50.0, 6.551080335)), -700.0, 700.0))
-                    err = mse(yva, ypred)
-                else:
-                    wpred = Xtr @ c_ll
-                    ypred = np.exp(np.clip(np.exp(np.clip(wpred, -50.0, 6.551080335)), -700.0, 700.0))
-                    err = mse(ytr, ypred)
-                if err < best_err:
-                    best_kind = "loglog"
-                    best_c = c_ll
-                    best_err = err
-
-            # refit chosen model on full segment data
-            if best_kind == "y":
-                c = self._ridge_fit(X, ys, lam_scale=1e-6)
-            elif best_kind == "log":
-                z = np.log(np.maximum(ys, eps))
-                c = self._ridge_fit(X, z, lam_scale=1e-6)
-            else:
-                w = np.log(np.maximum(np.log(np.maximum(ys, 1.0 + eps)), eps))
-                c = self._ridge_fit(X, w, lam_scale=1e-6)
-
-            models.append((best_kind, c, L, R, mid, half, None))
-
-        inv_span = segs / (b - a)
-
-        def result(x):
-            xv = float(x)
-            si = int((xv - a) * inv_span)
-            if si < 0:
-                si = 0
-            elif si >= segs:
-                si = segs - 1
-
-            kind, c, L, R, mid, half, _ = models[si]
-            if kind == "const":
+            def g(x, c=y0):
+                if isinstance(x, np.ndarray):
+                    return np.full_like(x, c, dtype=np.float64)
                 return float(c)
 
-            t = (xv - mid) / half
-            if t < -1.0:
-                t = -1.0
-            elif t > 1.0:
-                t = 1.0
+            return g
 
-            v = float(self._clenshaw_cheb(c, t))
-            if kind == "y":
-                return v
-            if kind == "log":
-                return self._safe_exp(v)
-            return self._safe_exp_exp(v)
+        deg = int(d) if d is not None else 0
+        if deg < 0:
+            deg = 0
 
-        return result
+        mid = 0.5 * (a + b)
+        half = 0.5 * (b - a)  # > 0 because a != b
+
+        # EXTRA SAFETY: never divide by 0 (shouldn't happen here, but keep it)
+        if half == 0.0 or not np.isfinite(half):
+            try:
+                c0 = float(np.asarray(f(mid)).reshape(-1)[0])
+            except Exception:
+                c0 = 0.0
+            return (lambda x, c=c0: np.full_like(x, c, dtype=np.float64)) if isinstance(x, np.ndarray) else (lambda x, c=c0: float(c))
+
+        # stop sampling slightly before maxtime to leave time for solve/closure
+        reserve = min(0.05 + 0.005 * (deg + 1), maxtime * 0.10)
+        reserve = max(0.01, reserve)  # keep a tiny reserve always
+        deadline = start + max(0.0, maxtime - reserve)
+
+        # probe point in middle of interval
+        x_probe = float(mid)
+        t0 = time.time()
+        try:
+            y_probe = f(x_probe)
+        except Exception:
+            return lambda x: 0.0
+        t1 = time.time()
+
+        y_probe = float(np.asarray(y_probe).reshape(-1)[0])
+        eval_dt = max(1e-6, t1 - t0)
+
+        # estimate noise scale cheaply (same point repeated)
+        noise_samples = [y_probe]
+        max_probe_time = min(0.1 * maxtime, 0.25)
+        while (time.time() - start) < max_probe_time and len(noise_samples) < 20:
+            if time.time() + eval_dt > deadline:
+                break
+            t0 = time.time()
+            try:
+                yy = f(x_probe)
+            except Exception:
+                break
+            t1 = time.time()
+            yy = float(np.asarray(yy).reshape(-1)[0])
+            noise_samples.append(yy)
+            eval_dt = 0.8 * eval_dt + 0.2 * max(1e-6, (t1 - t0))
+
+        sigma = float(np.std(noise_samples)) if len(noise_samples) > 1 else 0.0
+
+        # detect vectorization + per-element noise
+        vector_ok = False
+        noise_per_element = False
+        if time.time() + eval_dt < deadline:
+            try:
+                arr = np.full(8, x_probe, dtype=np.float64)
+                yarr = np.asarray(f(arr))
+                if yarr.shape == arr.shape:
+                    vector_ok = True
+                    # if noise is injected per element, identical x values differ
+                    thresh = (1e-10 if sigma == 0 else 0.05 * max(1e-12, sigma))
+                    noise_per_element = bool(np.std(yarr) > thresh)
+            except Exception:
+                vector_ok = False
+                noise_per_element = False
+
+        use_vector = bool(vector_ok and noise_per_element)
+
+        # accumulate normal equations for LS on t=(x-mid)/half in [-1,1]
+        n_params = deg + 1
+        if n_params <= 0:
+            return lambda x: 0.0
+
+        A = np.zeros((n_params, n_params), dtype=np.float64)
+        bvec = np.zeros(n_params, dtype=np.float64)
+        n_used = 0
+
+        def add_scalar_sample(tt: float, yy: float):
+            nonlocal n_used, A, bvec
+            # v = [1, t, t^2, ...]
+            v = np.empty(n_params, dtype=np.float64)
+            v[0] = 1.0
+            for k in range(1, n_params):
+                v[k] = v[k - 1] * tt
+
+            # faster / cleaner: full outer product (still same LS steps)
+            bvec += v * yy
+            A += np.outer(v, v)
+            n_used += 1
+
+        # include probe point
+        add_scalar_sample((x_probe - mid) / half, y_probe)
+
+        # cap samples to avoid insane loops when f is extremely fast.
+        cap_samples = 50000
+
+        time_left = max(0.0, deadline - time.time())
+        max_scalar_calls = int(time_left / eval_dt) if eval_dt > 0 else 0
+        max_scalar_calls = max(0, max_scalar_calls)
+
+        target_samples = min(max_scalar_calls, cap_samples)
+        target_samples = max(target_samples, min(max_scalar_calls, 10 * n_params))
+        remaining = max(0, target_samples - 1)
+
+        rng = np.random.default_rng()
+
+        # vector sampling
+        if use_vector and remaining > 0:
+            # keep batches moderate to avoid big V matrices
+            batch = min(8000, max(1000, 150 * n_params))
+
+            while remaining > 0 and time.time() + eval_dt < deadline:
+                m = int(min(batch, remaining))
+                if m <= 0:
+                    break
+
+                xs = rng.uniform(a, b, size=m).astype(np.float64)
+
+                t0 = time.time()
+                try:
+                    ys = np.asarray(f(xs), dtype=np.float64)
+                except Exception:
+                    use_vector = False
+                    break
+                t1 = time.time()
+
+                if ys.shape != xs.shape:
+                    use_vector = False
+                    break
+
+                dt = max(1e-6, (t1 - t0))
+                eval_dt = 0.8 * eval_dt + 0.2 * dt
+
+                ts = (xs - mid) / half
+                # same steps: build design matrix then normal eq
+                V = np.vander(ts, N=n_params, increasing=True)  # (m, p)
+                A += V.T @ V
+                bvec += V.T @ ys
+                n_used += m
+                remaining -= m
+
+        # scalar sampling fallback
+        if (not use_vector) and remaining > 0:
+            m = int(min(remaining, cap_samples))
+            if m > 0:
+                xs = np.linspace(a, b, num=m + 2, dtype=np.float64)[1:-1]
+                jitter = (b - a) * 1e-12
+                if jitter != 0.0 and np.isfinite(jitter):
+                    xs = xs + rng.uniform(-jitter, jitter, size=xs.shape)
+
+                for x in xs:
+                    if time.time() + eval_dt > deadline:
+                        break
+
+                    t0 = time.time()
+                    try:
+                        y = f(float(x))
+                    except Exception:
+                        break
+                    t1 = time.time()
+
+                    y = float(np.asarray(y).reshape(-1)[0])
+                    if not np.isfinite(y):
+                        continue
+
+                    eval_dt = 0.8 * eval_dt + 0.2 * max(1e-6, (t1 - t0))
+                    add_scalar_sample((float(x) - mid) / half, y)
+
+        # ensure symmetry (numerical)
+        A = 0.5 * (A + A.T)
+
+        # if too few samples, reduce degree
+        if n_used <= deg:
+            deg = max(0, n_used - 1)
+            n_params = deg + 1
+            if n_params <= 0:
+                return lambda x: 0.0
+            A = A[:n_params, :n_params]
+            bvec = bvec[:n_params]
+
+        # solve ridge regression for stability
+        tr = float(np.trace(A))
+        scale = tr / n_params if tr > 0 and np.isfinite(tr) else 1.0
+        lam = (1e-12 + 1e-6 * (sigma ** 2)) * scale
+        if n_used < 5 * n_params:
+            lam = max(lam, 1e-8 * scale)
+
+        coeffs = None
+        A_work = A.copy()
+
+        for _ in range(10):
+            A_work[:, :] = A
+            A_work.flat[::n_params + 1] += lam  # add ridge on diagonal
+            coeffs = _cholesky_solve_spd(A_work, bvec)
+            if coeffs is not None and np.all(np.isfinite(coeffs)):
+                break
+            lam *= 10.0
+
+        if coeffs is None:
+            c0 = float(np.median(noise_samples)) if noise_samples else y_probe
+
+            def g(x, c=c0):
+                if isinstance(x, np.ndarray):
+                    return np.full_like(x, c, dtype=np.float64)
+                return float(c)
+
+            return g
+
+        coeffs = np.asarray(coeffs, dtype=np.float64)
+
+        # trim tiny high-degree tail (helps when d is over-estimated)
+        if coeffs.size > 1:
+            cscale = float(np.max(np.abs(coeffs))) if np.any(coeffs) else 0.0
+            thr = max(1e-10, 5e-3 * (sigma if sigma > 0 else 1e-3), 1e-8 * cscale)
+            new_deg = coeffs.size - 1
+            while new_deg > 0 and abs(coeffs[new_deg]) < thr:
+                new_deg -= 1
+            coeffs = coeffs[:new_deg + 1]
+
+        mid_c, half_c, coeffs_c = float(mid), float(half), coeffs
+
+        # final fitted callable
+        def fitted(x):
+            # avoid divide-by-0 defensively (should not happen)
+            if half_c == 0.0 or not np.isfinite(half_c):
+                if isinstance(x, np.ndarray):
+                    return np.full_like(x, float(coeffs_c[0]), dtype=np.float64)
+                return float(coeffs_c[0])
+
+            x_arr = np.asarray(x, dtype=np.float64)
+            t = (x_arr - mid_c) / half_c
+            y = _poly_eval_inc(coeffs_c, t)
+
+            if np.isscalar(x):
+                return float(np.asarray(y).reshape(-1)[0])
+            return y
+
+        return fitted
 
 ##########################################################################
 
@@ -340,7 +352,7 @@ from tqdm import tqdm
 class TestAssignment4(unittest.TestCase):
 
     def test_return(self):
-        f = NOISY(0.01)(poly(1,1,1))
+        f = NOISY(0.01)(poly(1, 1, 1))
         ass4 = Assignment4()
         T = time.time()
         shape = ass4.fit(f=f, a=0, b=1, d=10, maxtime=5)
@@ -348,7 +360,7 @@ class TestAssignment4(unittest.TestCase):
         self.assertLessEqual(T, 5)
 
     def test_delay(self):
-        f = DELAYED(7)(NOISY(0.01)(poly(1,1,1)))
+        f = DELAYED(7)(NOISY(0.01)(poly(1, 1, 1)))
 
         ass4 = Assignment4()
         T = time.time()
@@ -357,22 +369,18 @@ class TestAssignment4(unittest.TestCase):
         self.assertGreaterEqual(T, 5)
 
     def test_err(self):
-        f = poly(1,1,1)
+        f = poly(1, 1, 1)
         nf = NOISY(1)(f)
         ass4 = Assignment4()
         T = time.time()
         ff = ass4.fit(f=nf, a=0, b=1, d=10, maxtime=5)
         T = time.time() - T
-        mse=0
-        for x in np.linspace(0,1,1000):            
-            self.assertNotEquals(f(x), nf(x))
-            mse+= (f(x)-ff(x))**2
-        mse = mse/1000
+        mse = 0
+        for x in np.linspace(0, 1, 1000):
+            self.assertNotEqual(f(x), nf(x))
+            mse += (f(x) - ff(x)) ** 2
+        mse = mse / 1000
         print(mse)
-
-        
-        
-
 
 
 if __name__ == "__main__":
