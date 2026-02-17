@@ -1,238 +1,166 @@
 """
 In this assignment you should implement an autodifferentiation framework from scratch
 """
-
 import numpy as np
-import time
-import random
+
 
 class Assignment6:
+
     class Variable:
         """
-        Scalar reverse-mode autodiff Variable (float64).
-        Supports: +, -, *, /, **, sin(), cos(), log10(), log()
+        Forward-mode automatic differentiation variable.
+        Holds:
+            val : function value
+            der : derivative w.r.t. input variable
         """
 
-        __slots__ = ("x", "grad", "_prev", "_backward")
+        __slots__ = ["val", "der"]
 
-        def __init__(self, x):
-            self.x = np.float64(x)
-            self.grad = np.float64(0.0)
-            self._prev = ()
-            self._backward = lambda: None
+        def __init__(self, val, der=0.0):
+            self.val = np.float64(val)
+            self.der = np.float64(der)
 
-        # ---------- helpers ----------
-        @staticmethod
-        def _as_var(v):
-            return v if isinstance(v, Assignment6.Variable) else Assignment6.Variable(v)
+        # ----------------------
+        # Basic Arithmetic
+        # ----------------------
 
-        # ---------- core autodiff ----------
-        def backward(self):
-            # iterative topo sort (avoids recursion depth + a bit faster)
-            topo = []
-            visited = set()
-            stack = [(self, 0)]
-            while stack:
-                node, state = stack.pop()
-                nid = id(node)
-                if state == 0:
-                    if nid in visited:
-                        continue
-                    visited.add(nid)
-                    stack.append((node, 1))
-                    for p in node._prev:
-                        stack.append((p, 0))
-                else:
-                    topo.append(node)
-
-            # clear grads in this graph
-            for v in topo:
-                v.grad = np.float64(0.0)
-
-            self.grad = np.float64(1.0)
-            for v in reversed(topo):
-                v._backward()
-
-        # ---------- operator overloads ----------
+        # (u + v)' = u' + v'
         def __add__(self, other):
-            other = Assignment6.Variable._as_var(other)
-            out = Assignment6.Variable(self.x + other.x)
-            out._prev = (self, other)
+            if isinstance(other, Assignment6.Variable):
+                return Assignment6.Variable(
+                    self.val + other.val,
+                    self.der + other.der
+                )
+            return Assignment6.Variable(
+                self.val + other,
+                self.der
+            )
 
-            def _backward():
-                g = out.grad
-                self.grad = np.float64(self.grad + g)
-                other.grad = np.float64(other.grad + g)
+        __radd__ = __add__
 
-            out._backward = _backward
-            return out
-
-        def __radd__(self, other):
-            return self.__add__(other)
-
+        # (u - v)' = u' - v'
         def __sub__(self, other):
-            other = Assignment6.Variable._as_var(other)
-            out = Assignment6.Variable(self.x - other.x)
-            out._prev = (self, other)
-
-            def _backward():
-                g = out.grad
-                self.grad = np.float64(self.grad + g)
-                other.grad = np.float64(other.grad - g)
-
-            out._backward = _backward
-            return out
+            if isinstance(other, Assignment6.Variable):
+                return Assignment6.Variable(
+                    self.val - other.val,
+                    self.der - other.der
+                )
+            return Assignment6.Variable(
+                self.val - other,
+                self.der
+            )
 
         def __rsub__(self, other):
-            other = Assignment6.Variable._as_var(other)
-            return other.__sub__(self)
+            return Assignment6.Variable(
+                other - self.val,
+                -self.der
+            )
 
+        # (u * v)' = u'v + uv'
         def __mul__(self, other):
-            other = Assignment6.Variable._as_var(other)
-            out = Assignment6.Variable(self.x * other.x)
-            out._prev = (self, other)
+            if isinstance(other, Assignment6.Variable):
+                return Assignment6.Variable(
+                    self.val * other.val,
+                    self.der * other.val + self.val * other.der
+                )
+            return Assignment6.Variable(
+                self.val * other,
+                self.der * other
+            )
 
-            def _backward():
-                g = out.grad
-                self.grad = np.float64(self.grad + other.x * g)
-                other.grad = np.float64(other.grad + self.x * g)
+        __rmul__ = __mul__
 
-            out._backward = _backward
-            return out
-
-        def __rmul__(self, other):
-            return self.__mul__(other)
-
+        # (u / v)' = (u'v - uv') / v²
         def __truediv__(self, other):
-            other = Assignment6.Variable._as_var(other)
-            out = Assignment6.Variable(self.x / other.x)
-            out._prev = (self, other)
-
-            def _backward():
-                g = out.grad
-                inv = np.float64(1.0) / other.x
-                self.grad = np.float64(self.grad + inv * g)
-                other.grad = np.float64(other.grad - (self.x * inv * inv) * g)
-
-            out._backward = _backward
-            return out
+            if isinstance(other, Assignment6.Variable):
+                return Assignment6.Variable(
+                    self.val / other.val,
+                    (self.der * other.val - self.val * other.der) / (other.val ** 2)
+                )
+            return Assignment6.Variable(
+                self.val / other,
+                self.der / other
+            )
 
         def __rtruediv__(self, other):
-            other = Assignment6.Variable._as_var(other)
-            return other.__truediv__(self)
+            return Assignment6.Variable(
+                other / self.val,
+                -other * self.der / (self.val ** 2)
+            )
 
+        # ----------------------
+        # Power
+        # ----------------------
+
+        # (u^v)' = u^v * (v' ln(u) + v u'/u)
         def __pow__(self, other):
-            # supports scalar or Variable exponent
             if isinstance(other, Assignment6.Variable):
-                base = self
-                expv = other
-                out_val = np.float64(base.x ** expv.x)
-                out = Assignment6.Variable(out_val)
-                out._prev = (base, expv)
+                val = self.val ** other.val
+                der = val * (
+                    other.der * np.log(self.val)
+                    + other.val * self.der / self.val
+                )
+                return Assignment6.Variable(val, der)
 
-                def _backward():
-                    g = out.grad
-                    # d/dx: out * exp / x  (more stable than exp*x**(exp-1))
-                    base.grad = np.float64(base.grad + (out.x * expv.x / base.x) * g)
-                    # d/dexp: out * ln(x)
-                    expv.grad = np.float64(expv.grad + (out.x * np.log(base.x)) * g)
-
-                out._backward = _backward
-                return out
-            else:
-                p = np.float64(other)
-                out_val = np.float64(self.x ** p)
-                out = Assignment6.Variable(out_val)
-                out._prev = (self,)
-
-                def _backward():
-                    g = out.grad
-                    self.grad = np.float64(self.grad + (p * (self.x ** (p - 1.0))) * g)
-
-                out._backward = _backward
-                return out
+            # constant exponent
+            val = self.val ** other
+            der = other * (self.val ** (other - 1)) * self.der
+            return Assignment6.Variable(val, der)
 
         def __rpow__(self, other):
-            # scalar ** Variable
-            other = np.float64(other)
-            out_val = np.float64(other ** self.x)
-            out = Assignment6.Variable(out_val)
-            out._prev = (self,)
+            val = other ** self.val
+            der = val * np.log(other) * self.der
+            return Assignment6.Variable(val, der)
 
-            def _backward():
-                g = out.grad
-                self.grad = np.float64(self.grad + (out.x * np.log(other)) * g)
+        # ----------------------
+        # Elementary Functions
+        # ----------------------
 
-            out._backward = _backward
-            return out
-
-        def __neg__(self):
-            out = Assignment6.Variable(-self.x)
-            out._prev = (self,)
-
-            def _backward():
-                self.grad = np.float64(self.grad - out.grad)
-
-            out._backward = _backward
-            return out
-
-        # ---------- math ops ----------
         def sin(self):
-            out = Assignment6.Variable(np.sin(self.x))
-            out._prev = (self,)
-
-            def _backward():
-                self.grad = np.float64(self.grad + (np.cos(self.x) * out.grad))
-
-            out._backward = _backward
-            return out
+            return Assignment6.Variable(
+                np.sin(self.val),
+                np.cos(self.val) * self.der
+            )
 
         def cos(self):
-            out = Assignment6.Variable(np.cos(self.x))
-            out._prev = (self,)
-
-            def _backward():
-                self.grad = np.float64(self.grad + (-np.sin(self.x) * out.grad))
-
-            out._backward = _backward
-            return out
-
-        def log(self):
-            # natural log
-            out = Assignment6.Variable(np.log(self.x))
-            out._prev = (self,)
-
-            def _backward():
-                self.grad = np.float64(self.grad + (out.grad / self.x))
-
-            out._backward = _backward
-            return out
+            return Assignment6.Variable(
+                np.cos(self.val),
+                -np.sin(self.val) * self.der
+            )
 
         def log10(self):
-            out = Assignment6.Variable(np.log10(self.x))
-            out._prev = (self,)
+            return Assignment6.Variable(
+                np.log10(self.val),
+                self.der / (self.val * np.log(10))
+            )
 
-            def _backward():
-                self.grad = np.float64(self.grad + (out.grad / (self.x * np.log(10.0))))
+        def log(self):
+            return Assignment6.Variable(
+                np.log(self.val),
+                self.der / self.val
+            )
 
-            out._backward = _backward
-            return out
+        def exp(self):
+            val = np.exp(self.val)
+            return Assignment6.Variable(
+                val,
+                val * self.der
+            )
+
+    # ----------------------
+    # Assignment Interface
+    # ----------------------
 
     def __init__(self):
         pass
 
     def gradient(self, f, x) -> np.float64:
         """
-        Reverse-mode scalar autodiff: O(#ops).
-        Clears per-call graph grads to avoid accumulation across repeated calls.
+        Compute derivative of scalar function f at scalar x.
         """
-        vx = Assignment6.Variable(np.float64(x))
-        y = f(vx)
-        if not isinstance(y, Assignment6.Variable):
-            y = Assignment6.Variable(y)
-        y.backward()
-        return np.float64(vx.grad)
-
+        var_x = self.Variable(x, 1.0)
+        result = f(var_x)
+        return np.float64(result.der)
 
 ##########################################################################
 

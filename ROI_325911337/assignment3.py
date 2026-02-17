@@ -17,90 +17,102 @@ This assignment is more complicated than Assignment1 and Assignment2 because:
 """
 
 import numpy as np
+import heapq
+
 
 class Assignment3:
     def __init__(self):
         """
-        Initialization for pre-calculations.
+        Initialization for potential future pre-calculations.
         """
         pass
 
+    # ------------------------------------------------------------------
+    # 1. Gauss–Legendre Quadrature
+    # ------------------------------------------------------------------
     def integrate(self, f: callable, a: float, b: float, n: int) -> np.float32:
         """
-        Calculates the definite integral using Gauss-Legendre Quadrature.
+        Compute the definite integral of f over [a, b]
+        using n-point Gauss–Legendre quadrature.
         """
-        # Convert bounds to float64 for intermediate calculation stability
-        lower, upper = np.float64(a), np.float64(b)
-        
-        # Obtain Legendre-Gauss nodes and weights
+
+        a = np.float64(a)
+        b = np.float64(b)
+
+        # Get nodes and weights in [-1,1]
         nodes, weights = np.polynomial.legendre.leggauss(n)
 
-        # Rescale nodes from [-1, 1] to [a, b]
-        # formula: x = (b-a)/2 * node + (b+a)/2
-        scaling_factor = 0.5 * (upper - lower)
-        offset = 0.5 * (upper + lower)
-        mapped_nodes = scaling_factor * nodes + offset
-        
-        # Evaluate function across all mapped nodes
-        # List comprehension ensures the callable is handled correctly
-        y_values = np.array([f(x) for x in mapped_nodes], dtype=np.float64)
-        
-        # The integral is the dot product of weights and values, scaled by (b-a)/2
-        result = np.dot(weights, y_values) * scaling_factor
-        
+        # Affine transform to [a,b]
+        scale = 0.5 * (b - a)
+        shift = 0.5 * (b + a)
+        mapped_nodes = scale * nodes + shift
+
+        # Evaluate function
+        y_vals = np.array([f(x) for x in mapped_nodes], dtype=np.float64)
+
+        # Weighted sum
+        result = scale * np.dot(weights, y_vals)
+
         return np.float32(result)
 
+    # ------------------------------------------------------------------
+    # 2. Area Between Two Functions
+    # ------------------------------------------------------------------
     def areabetween(self, f1: callable, f2: callable) -> np.float32:
         """
-        Computes the total absolute area between two functions by finding intersections.
+        Compute the total absolute area between f1 and f2.
+        The method:
+        1. Detect sign changes of f1 - f2
+        2. Refine roots via bisection
+        3. Integrate absolute area between consecutive intersections
         """
-        # Define the difference function
-        diff_func = lambda x: f1(x) - f2(x)
-        
-        # 1. Search for root intervals within the specified range [1, 100]
-        search_range = np.linspace(1.0, 100.0, num=1000, dtype=np.float32)
-        vals = np.array([diff_func(x) for x in search_range], dtype=np.float32)
-        
+
+        def diff(x):
+            return f1(x) - f2(x)
+
+        # Search interval (kept same logic as original)
+        search_range = np.linspace(1.0, 100.0, 1000, dtype=np.float64)
+        values = np.array([diff(x) for x in search_range], dtype=np.float64)
+
         # Detect sign changes
-        # np.sign(vals) gives -1, 0, or 1. np.diff finds where these change.
-        sign_changes = np.where(np.diff(np.sign(vals)) != 0)[0]
-        
+        sign_changes = np.where(np.diff(np.sign(values)) != 0)[0]
+
         intersections = []
-        
-        # 2. Refine roots using Bisection
+
         for idx in sign_changes:
-            low, high = search_range[idx], search_range[idx + 1]
-            
-            # Standard bisection refinement
+            low = search_range[idx]
+            high = search_range[idx + 1]
+            f_low = values[idx]
+
+            # Bisection refinement
             for _ in range(25):
-                mid = np.float32(0.5) * (low + high)
-                if diff_func(low) * diff_func(mid) <= 0:
+                mid = 0.5 * (low + high)
+                f_mid = diff(mid)
+
+                if f_low * f_mid <= 0:
                     high = mid
                 else:
                     low = mid
-            
-            root = np.float32(0.5) * (low + high)
-            
-            # Prevent adding duplicates that are too close together
+                    f_low = f_mid
+
+            root = 0.5 * (low + high)
+
+            # Avoid duplicates
             if not intersections or abs(root - intersections[-1]) > 1e-3:
                 intersections.append(root)
 
-        # Validation: Must have at least two points to enclose an area
         if len(intersections) < 2:
             return np.float32(np.nan)
-            
-        total_accumulated_area = np.float32(0.0)
-        
-        # 3. Sum the absolute area of each enclosed segment
-        for j in range(len(intersections) - 1):
-            left_bound = intersections[j]
-            right_bound = intersections[j + 1]
-            
-            # Integrating the difference function per segment
-            segment_val = self.integrate(diff_func, left_bound, right_bound, 64)
-            total_accumulated_area += np.abs(segment_val)
 
-        return np.float32(total_accumulated_area)
+        # Integrate segment-wise
+        total_area = 0.0
+
+        for left, right in zip(intersections[:-1], intersections[1:]):
+            segment = self.integrate(diff, left, right, 64)
+            total_area += abs(segment)
+
+        return np.float32(total_area)
+
 ##########################################################################
 
 
